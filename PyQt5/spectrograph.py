@@ -39,7 +39,7 @@ LIVESTREAM = 2
 
 
 class spectrograph_gui(QWidget):
-    def __init__(self, hardware = None, model = None, fname = None, type = None, sim_type = None, parent=None, live_data = False):
+    def __init__(self, hardware = None, model = None, fname = None, data_type = None, sim_type = None, parent=None, live_data = False, step = True, csv_name = 'eeg_log_file.csv'):
         # init from arguments
         self.parent = parent
         super(spectrograph_gui, self).__init__()
@@ -48,8 +48,19 @@ class spectrograph_gui(QWidget):
         self.hardware = hardware
         self.model = model
         self.live_data = live_data
+        self.csv_name = csv_name
+        self.step = step
 
-        
+        if data_type == 'Live stream':
+            self.data_type = LIVESTREAM
+        elif data_type == 'Simulate':
+            self.data_type = SIMULATE
+        elif data_type == 'File':
+            self.data_type = FILE
+        else:
+            raise Exception('Unknown data type: {} Try "Live stream", "Simulate", or "File"'.format(data_type))
+
+        # self.data_type = SIMULATE
         
         self.window_left = 0
         self.window_right = 2
@@ -58,11 +69,11 @@ class spectrograph_gui(QWidget):
         self.full_length_drawn = False
         self.main_graph_drawn = False
         plt.rcParams.update({'font.size': 8})
-
-        self.data_type = SIMULATE        
         self.is_stream_running = False
         self.srate = 20
         self.channels = 4
+        # this is which channel the spectrograph shows
+        self.curr_channel = 0
         if self.data_type == FILE:
             # for a 4 channel muse file reading
             self.data = utils.file_parsing.muse_csv_parser.read_csv_file(fname, outer_channels = True)
@@ -70,7 +81,8 @@ class spectrograph_gui(QWidget):
             self.data = []
             for i in range(self.channels):
                 self.data.append(np.linspace(-100, 100, 50))
-        self.csv_name = str(int(time.time())) + ".csv"
+        self.csv_name = self.csv_name[:-4] + '_' + str(int(time.time())) + ".csv"
+        print('csv name {}'.format(self.csv_name))
         self.csv_length = 0
         self.data_width = 50
 
@@ -83,7 +95,7 @@ class spectrograph_gui(QWidget):
         if self.fname:
             self.setWindowTitle('Reading file: {}'.format(self.fname))
         else:
-            self.setWindowTitle("string")
+            self.setWindowTitle("Live streaming")
 
         # adding widgets to the window
         self.layout = QGridLayout()
@@ -148,8 +160,14 @@ class spectrograph_gui(QWidget):
         self.main_graph_radio_hbox = QHBoxLayout()
         self.main_graph_radio_hbox.addSpacing(800)
         self.main_graph_radio_hbox.addWidget(self.main_graph_raw_trace)
-        self.main_graph_radio_hbox.addWidget(self.main_graph_spectra)
+        # self.main_graph_radio_hbox.addWidget(self.main_graph_spectra)
         self.main_graph_radio_hbox.addWidget(self.main_graph_spectrogram)
+        # here's a checkbox for whether to lock the display to the most recent data
+        # not used with file
+        if self.data_type != FILE:
+            self.lock_to_end_checkbox = QCheckBox('Lock to most recent data')
+            self.main_graph_radio_hbox.addWidget(self.lock_to_end_checkbox)
+            self.lock_to_end_checkbox.stateChanged.connect(self.lock_to_end)
         self.main_graph_vbox.addWidget(self.main_graph, 10)
         self.main_graph_vbox.addLayout(self.main_graph_radio_hbox, 1)
         self.plot_vbox.addLayout(self.main_graph_vbox, 4)
@@ -164,6 +182,7 @@ class spectrograph_gui(QWidget):
         
         self.comboBox = QComboBox()
         self.comboBox.addItems(["- Select One -", "Channel 1", "Channel 2", "Channel 3", "Channel 4"])
+        self.comboBox.activated.connect(self.change_channel)
         self.window_left_button = QPushButton("Move Window Left")
         self.window_left_button.clicked.connect(self.move_window_left)
         self.window_right_button = QPushButton("Move Window Right")
@@ -369,13 +388,50 @@ class spectrograph_gui(QWidget):
         # new_data will be [] if we haven't managed to receive any data yet
         if new_data != []:
             # new_data is now a list of lists, each inner list is an instant containing channels data points
+            # so is self.data
             # now we update our data and the figures
+            # print('new data shape {} old data shape {}'.format(np.array(new_data).shape,self.data.shape))
+            # print('new data {} old data {}'.format(np.array(new_data), self.data))
             self.data = np.append(self.data, np.array(new_data), axis=0)
             if self.data.shape[0] >= 100:
                 self.plotted_data = self.data[np.linspace(0, self.data.shape[0]-1, 100).astype(int)]
             self.full_length_fn()
             self.main_graph_fn()
 
+    def keyPressEvent(self, event):
+        pass
+        # if event.key() == QtCore.Qt.Key_Right:
+        #     self.move_window_right()
+        # elif event.key() == QtCore.Qt.Key_Left:
+        #     self.move_window_left()
+    
+    def change_channel(self):
+        # runs when user selcts channel from channel dropdown
+        # sets our current channel (to be plotted on spectrogram) to new one
+        # calls to update display
+        self.curr_channel = self.comboBox.currentIndex() - 1
+        self.full_length_fn()
+        self.main_graph_fn()
+    
+    def lock_to_end(self, state):
+        # runs when state of lock to end checkbox is changed
+        # if checked, locks window to end and disables buttons
+        # if unchecked, enables buttons
+        if state == QtCore.Qt.Checked:
+            window_size = self.window_right - self.window_left
+            # we're going to set it to the csv length since that seems like the most 
+            # reliable way of knowing how many data instants we have
+            self.window_right = self.plotted_data.shape[0] - window_size//2
+            self.window_left = self.window_right - window_size
+            self.window_resize.setEnabled(False)
+            self.step_resize.setEnabled(False)
+            self.full_length_fn()
+            self.main_graph_fn()
+        else:
+            self.window_resize.setEnabled(True)
+            self.step_resize.setEnabled(True)
+            print('Unchecked')
+    
     def full_length_boiler(self):
         self.full_length.axes.set_title("Full Session")
         ticks = np.linspace(0, self.data.shape[0] / self.srate, 6)
@@ -397,7 +453,7 @@ class spectrograph_gui(QWidget):
     def graph_full_length_spectrogram(self):
         self.full_length_fn = self.graph_full_length_spectrogram
         self.full_length.axes.cla()
-        self.full_length.axes.specgram(self.plotted_data)
+        self.full_length.axes.specgram(self.plotted_data.T[self.curr_channel])
         self.full_length.axes.set_ylabel('Frequency (Hz)')
         self.full_length_boiler()
         if self.full_length_drawn:
@@ -425,7 +481,7 @@ class spectrograph_gui(QWidget):
     def graph_main_graph_spectra(self):
         self.main_graph_fn = self.graph_main_graph_spectra
         self.main_graph.axes.cla()
-        self.main_graph.axes.plot(self.plotted_data)
+        self.main_graph.axes.plot(self.plotted_data.T)
         self.main_graph.axes.set_ylabel('Frequency (Hz)')
         self.main_graph_boiler()
         if self.main_graph_drawn:
@@ -436,7 +492,8 @@ class spectrograph_gui(QWidget):
     def graph_main_graph_spectrogram(self):
         self.main_graph_fn = self.graph_main_graph_spectrogram
         self.main_graph.axes.cla()
-        self.main_graph.axes.specgram(self.plotted_data)
+        self.main_graph.axes.specgram(self.plotted_data.T[self.curr_channel])
+        # # we will graph the specgram of our current channel
         self.main_graph.axes.set_ylabel('Frequency (Hz)')
         self.main_graph.axes.set_yticks([0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1])
         self.main_graph.axes.set_yticklabels([None, str(u"\u03B4"), None, str(u"\u03B8"), None, str(u"\u03B1"), None, str(u"\u03B2"), None])
